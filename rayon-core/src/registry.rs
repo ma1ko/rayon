@@ -1,11 +1,12 @@
-use crate::job::{JobFifo, JobRef, StackJob};
+use crate::job::{HeapJob, JobFifo, JobRef, StackJob};
 use crate::latch::{CountLatch, Latch, LatchProbe, LockLatch, SpinLatch, TickleLatch};
 use crate::log::Event::*;
 use crate::sleep::Sleep;
 use crate::unwind;
 use crate::util::leak;
 use crate::{
-    ErrorKind, ExitHandler, PanicHandler, StartHandler, ThreadPoolBuildError, ThreadPoolBuilder,
+    ErrorKind, ExitHandler, PanicHandler, StartHandler, StealCallback, ThreadPoolBuildError,
+    ThreadPoolBuilder,
 };
 use crossbeam_deque::{Steal, Stealer, Worker};
 use crossbeam_queue::SegQueue;
@@ -138,6 +139,7 @@ pub(super) struct Registry {
     panic_handler: Option<Box<PanicHandler>>,
     start_handler: Option<Box<StartHandler>>,
     exit_handler: Option<Box<ExitHandler>>,
+    steal_callback: Option<Box<StealCallback>>,
 
     // When this latch reaches 0, it means that all work on this
     // registry must be complete. This is ensured in the following ways:
@@ -241,6 +243,7 @@ impl Registry {
             panic_handler: builder.take_panic_handler(),
             start_handler: builder.take_start_handler(),
             exit_handler: builder.take_exit_handler(),
+            steal_callback: builder.take_steal_callback(),
         });
 
         // If we return early or panic, make sure to terminate existing threads.
@@ -713,7 +716,17 @@ impl WorkerThread {
                 let victim = &self.registry.thread_infos[victim_index];
                 loop {
                     match victim.stealer.steal() {
-                        Steal::Empty => return None,
+                        Steal::Empty => {
+                            // this shouldn't abort the search if there's no job found...
+                            // -> Get the callback to the steal handler of the other job
+                            let callback = &self.registry.steal_callback.as_ref()?;
+                            // create a job
+                            let job = callback(victim_index)?;
+                            // Make a heapjob out of it
+                            let job: HeapJob<_> = HeapJob::new(job);
+                            // return that thing
+                            return Some(HeapJob::as_job_ref(Box::new(job)));
+                        }
                         Steal::Success(d) => {
                             log!(StoleWork {
                                 worker: self.index,

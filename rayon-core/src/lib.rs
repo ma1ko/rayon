@@ -143,6 +143,7 @@ pub struct ThreadPoolBuilder<S = DefaultSpawn> {
     /// "depth-first" fashion. If true, they will do a "breadth-first"
     /// fashion. Depth-first is the default.
     breadth_first: bool,
+    steal_callback: Option<Box<StealCallback>>,
 }
 
 /// Contains the rayon thread pool configuration. Use [`ThreadPoolBuilder`] instead.
@@ -167,6 +168,8 @@ type StartHandler = dyn Fn(usize) + Send + Sync;
 /// Note that this same closure may be invoked multiple times in parallel.
 type ExitHandler = dyn Fn(usize) + Send + Sync;
 
+type StealCallback = dyn Fn(usize) -> Option<Box<dyn FnOnce() + Send>> + Send + Sync;
+
 // NB: We can't `#[derive(Default)]` because `S` is left ambiguous.
 impl Default for ThreadPoolBuilder {
     fn default() -> Self {
@@ -179,6 +182,7 @@ impl Default for ThreadPoolBuilder {
             exit_handler: None,
             spawn_handler: DefaultSpawn,
             breadth_first: false,
+            steal_callback: None,
         }
     }
 }
@@ -362,6 +366,7 @@ impl<S> ThreadPoolBuilder<S> {
             start_handler: self.start_handler,
             exit_handler: self.exit_handler,
             breadth_first: self.breadth_first,
+            steal_callback: self.steal_callback,
         }
     }
 
@@ -542,9 +547,7 @@ impl<S> ThreadPoolBuilder<S> {
     fn take_exit_handler(&mut self) -> Option<Box<ExitHandler>> {
         self.exit_handler.take()
     }
-
     /// Sets a callback to be invoked on thread exit.
-    ///
     /// The closure is passed the index of the thread on which it is invoked.
     /// Note that this same closure may be invoked multiple times in parallel.
     /// If this closure panics, the panic will be passed to the panic handler.
@@ -555,6 +558,19 @@ impl<S> ThreadPoolBuilder<S> {
     {
         self.exit_handler = Some(Box::new(exit_handler));
         self
+    }
+
+    /// Docs here
+    pub fn steal_callback<H>(mut self, steal_callback: H) -> Self
+    where
+        H: Fn(usize) -> Option<Box<dyn FnOnce() + Send>> + Send + Sync + 'static,
+    {
+        self.steal_callback = Some(Box::new(steal_callback));
+        self
+    }
+
+    fn take_steal_callback(&mut self) -> Option<Box<StealCallback>> {
+        self.steal_callback.take()
     }
 }
 
@@ -685,6 +701,7 @@ impl<S> fmt::Debug for ThreadPoolBuilder<S> {
             ref exit_handler,
             spawn_handler: _,
             ref breadth_first,
+            steal_callback: _, // TODO: Understand what this is actually for
         } = *self;
 
         // Just print `Some(<closure>)` or `None` to the debug
