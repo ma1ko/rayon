@@ -305,19 +305,16 @@ impl Registry {
             }
         }
     }
-    pub(super) fn send_job<'a>(job: Box<dyn FnOnce() + Send + Sync + 'a>) {
-        let job = HeapJob::new(job);
-        let send_job: JobRef;
+    pub(super) fn send_job(job: JobRef) {
         let worker_thread: &WorkerThread;
         unsafe {
             worker_thread = WorkerThread::current().as_ref().unwrap();
-            send_job = HeapJob::as_job_ref(Box::new(job));
         }
         let idx = worker_thread.index();
         // send this thread to our own channel, so others can grab it
         worker_thread.registry.thread_infos[idx]
             .sender
-            .send(send_job)
+            .send(job)
             .expect("Channel is dead!");
     }
 

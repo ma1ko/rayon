@@ -83,10 +83,6 @@ use self::registry::{CustomSpawn, DefaultSpawn, ThreadSpawn};
 pub fn current_num_threads() -> usize {
     crate::registry::Registry::current_num_threads()
 }
-/// Docs
-pub fn send_job<'a>(job: Box<dyn FnOnce() + Send + Sync + 'a>) {
-    crate::registry::Registry::send_job(job);
-}
 
 /// Error when initializing a thread pool.
 #[derive(Debug)]

@@ -461,6 +461,21 @@ impl<'scope> Scope<'scope> {
             self.base.registry.inject_or_push(job_ref);
         }
     }
+
+    /// Docs
+    pub fn spawn_for<BODY>(&self, body: BODY)
+    where
+        BODY: FnOnce(&Scope<'scope>) + Send + 'scope,
+    {
+        self.base.increment();
+        unsafe {
+            let job_ref = Box::new(HeapJob::new(move || {
+                self.base.execute_job(move || body(self))
+            }))
+            .as_job_ref();
+            Registry::send_job(job_ref);
+        }
+    }
 }
 
 impl<'scope> ScopeFifo<'scope> {
