@@ -8,6 +8,7 @@ use crate::{
     ErrorKind, ExitHandler, PanicHandler, StartHandler, StealCallback, ThreadPoolBuildError,
     ThreadPoolBuilder,
 };
+use crossbeam_channel::*;
 use crossbeam_deque::{Steal, Stealer, Worker};
 use crossbeam_queue::SegQueue;
 use std::any::Any;
@@ -304,6 +305,21 @@ impl Registry {
             }
         }
     }
+    pub(super) fn send_job<'a>(job: Box<dyn FnOnce() + Send + Sync + 'a>) {
+        let job = HeapJob::new(job);
+        let send_job: JobRef;
+        let worker_thread: &WorkerThread;
+        unsafe {
+            worker_thread = WorkerThread::current().as_ref().unwrap();
+            send_job = HeapJob::as_job_ref(Box::new(job));
+        }
+        let idx = worker_thread.index();
+        // send this thread to our own channel, so others can grab it
+        worker_thread.registry.thread_infos[idx]
+            .sender
+            .send(send_job)
+            .expect("Channel is dead!");
+    }
 
     /// Returns an opaque identifier for this registry.
     pub(super) fn id(&self) -> RegistryId {
@@ -534,14 +550,20 @@ struct ThreadInfo {
 
     /// the "stealer" half of the worker's deque
     stealer: Stealer<JobRef>,
+
+    sender: Sender<JobRef>,
+    receiver: Receiver<JobRef>,
 }
 
 impl ThreadInfo {
     fn new(stealer: Stealer<JobRef>) -> ThreadInfo {
+        let (s, r) = unbounded();
         ThreadInfo {
             primed: LockLatch::new(),
             stopped: LockLatch::new(),
             stealer,
+            sender: s,
+            receiver: r,
         }
     }
 }
@@ -717,15 +739,14 @@ impl WorkerThread {
                 loop {
                     match victim.stealer.steal() {
                         Steal::Empty => {
-                            // this shouldn't abort the search if there's no job found...
-                            // -> Get the callback to the steal handler of the other job
+                            // we can check if the thread support steal callbacks
                             let callback = &self.registry.steal_callback.as_ref()?;
-                            // create a job
-                            let job = callback(victim_index)?;
-                            // Make a heapjob out of it
-                            let job: HeapJob<_> = HeapJob::new(job);
-                            // return that thing
-                            return Some(HeapJob::as_job_ref(Box::new(job)));
+                            callback(victim_index)?;
+
+                            // wait for the work to arrive(victim need to call send_job(me)) or
+                            // this will deadlock
+                            let job = victim.receiver.recv().expect("Channel crashed!");
+                            return Some(job);
                         }
                         Steal::Success(d) => {
                             log!(StoleWork {

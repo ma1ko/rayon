@@ -83,6 +83,10 @@ use self::registry::{CustomSpawn, DefaultSpawn, ThreadSpawn};
 pub fn current_num_threads() -> usize {
     crate::registry::Registry::current_num_threads()
 }
+/// Docs
+pub fn send_job<'a>(job: Box<dyn FnOnce() + Send + Sync + 'a>) {
+    crate::registry::Registry::send_job(job);
+}
 
 /// Error when initializing a thread pool.
 #[derive(Debug)]
@@ -168,7 +172,7 @@ type StartHandler = dyn Fn(usize) + Send + Sync;
 /// Note that this same closure may be invoked multiple times in parallel.
 type ExitHandler = dyn Fn(usize) + Send + Sync;
 
-type StealCallback = dyn Fn(usize) -> Option<Box<dyn FnOnce() + Send>> + Send + Sync;
+type StealCallback = dyn Fn(usize) -> Option<()> + Send + Sync;
 
 // NB: We can't `#[derive(Default)]` because `S` is left ambiguous.
 impl Default for ThreadPoolBuilder {
@@ -563,7 +567,7 @@ impl<S> ThreadPoolBuilder<S> {
     /// Docs here
     pub fn steal_callback<H>(mut self, steal_callback: H) -> Self
     where
-        H: Fn(usize) -> Option<Box<dyn FnOnce() + Send>> + Send + Sync + 'static,
+        H: Fn(usize) -> Option<()> + Send + Sync + 'static,
     {
         self.steal_callback = Some(Box::new(steal_callback));
         self
