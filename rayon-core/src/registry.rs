@@ -1,4 +1,4 @@
-use crate::job::{HeapJob, JobFifo, JobRef, StackJob};
+use crate::job::{JobFifo, JobRef, StackJob};
 use crate::latch::{CountLatch, Latch, LatchProbe, LockLatch, SpinLatch, TickleLatch};
 use crate::log::Event::*;
 use crate::sleep::Sleep;
@@ -8,7 +8,6 @@ use crate::{
     ErrorKind, ExitHandler, PanicHandler, StartHandler, StealCallback, ThreadPoolBuildError,
     ThreadPoolBuilder,
 };
-use crossbeam_channel::*;
 use crossbeam_deque::{Steal, Stealer, Worker};
 use crossbeam_queue::SegQueue;
 use std::any::Any;
@@ -305,18 +304,6 @@ impl Registry {
             }
         }
     }
-    pub(super) fn send_job(job: JobRef) {
-        let worker_thread: &WorkerThread;
-        unsafe {
-            worker_thread = WorkerThread::current().as_ref().unwrap();
-        }
-        let idx = worker_thread.index();
-        // send this thread to our own channel, so others can grab it
-        worker_thread.registry.thread_infos[idx]
-            .sender
-            .send(job)
-            .expect("Channel is dead!");
-    }
 
     /// Returns an opaque identifier for this registry.
     pub(super) fn id(&self) -> RegistryId {
@@ -547,20 +534,14 @@ struct ThreadInfo {
 
     /// the "stealer" half of the worker's deque
     stealer: Stealer<JobRef>,
-
-    sender: Sender<JobRef>,
-    receiver: Receiver<JobRef>,
 }
 
 impl ThreadInfo {
     fn new(stealer: Stealer<JobRef>) -> ThreadInfo {
-        let (s, r) = unbounded();
         ThreadInfo {
             primed: LockLatch::new(),
             stopped: LockLatch::new(),
             stealer,
-            sender: s,
-            receiver: r,
         }
     }
 }
@@ -738,12 +719,10 @@ impl WorkerThread {
                         Steal::Empty => {
                             // we can check if the thread support steal callbacks
                             let callback = &self.registry.steal_callback.as_ref()?;
+                            // Ask for work, return with nothing if there's no work
                             callback(victim_index)?;
 
-                            // wait for the work to arrive(victim need to call send_job(me)) or
-                            // this will deadlock
-                            let job = victim.receiver.recv().expect("Channel crashed!");
-                            return Some(job);
+                            {} // we said we need work, so let's retry getting it
                         }
                         Steal::Success(d) => {
                             log!(StoleWork {
